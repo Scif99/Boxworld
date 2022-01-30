@@ -1,0 +1,205 @@
+{
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": 1,
+   "id": "16bc5e5f",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "import gym\n",
+    "import torch\n",
+    "import torch.nn as nn\n",
+    "from torch.distributions import Categorical\n",
+    "from torch.optim import Adam\n",
+    "import matplotlib.pyplot as plt"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 2,
+   "id": "8187146b",
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "env = gym.make('CartPole-v1')"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 3,
+   "id": "65f0cf16",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "class PolicyNetwork(nn.Module):\n",
+    "    def __init__(self):\n",
+    "        super().__init__()\n",
+    "        self.observation_space = env.observation_space.shape[0]\n",
+    "        self.action_space = env.action_space.n \n",
+    "        self.linear_relu_stack = nn.Sequential(\n",
+    "        nn.Linear(self.observation_space,64), #first hidden layer\n",
+    "        nn.ReLU(),\n",
+    "        nn.Linear(64,64), #2nd hidden layer\n",
+    "        nn.ReLU(),\n",
+    "        nn.Linear(64,self.action_space) #output layer\n",
+    "        )\n",
+    "        \n",
+    "    def forward(self,x):\n",
+    "        logits = self.linear_relu_stack(x)\n",
+    "        return logits\n",
+    "        \n",
+    "def get_policy(obs, net):\n",
+    "    '''Return a categorical distribution over actions for a given observation'''\n",
+    "    logits = net(obs)\n",
+    "    return Categorical(logits=logits)\n",
+    "    \n",
+    "def get_action(obs,net):\n",
+    "    '''Samples an action from the categorical distribution resulting from an observation'''\n",
+    "    return get_policy(obs,net).sample().item()\n",
+    "\n",
+    "def compute_loss(obs,act,weights,net):\n",
+    "    '''Computes a 'pseudo' loss function whose gradient is equal to the policy gradient\n",
+    "        this isn't really a loss function, but it allows us to use pytorch's autograd tools'''\n",
+    "    logp = get_policy(obs,net).log_prob(act)\n",
+    "    return -(logp * weights).mean()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 4,
+   "id": "4a2e17d1",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def sample_trajectories(batch_size, net):\n",
+    "    '''Sample a number of trajectores, and return the data stored'''\n",
+    "    batch_obs = []\n",
+    "    batch_acts = []\n",
+    "    batch_rets = []\n",
+    "    batch_weights = [] # In this case, is just the full return R(tau)\n",
+    "    batch_lens = []\n",
+    "    \n",
+    "    # Render first episode of each batch\n",
+    "    rendered_first_episode = False\n",
+    "    \n",
+    "    for ep in range(batch_size):\n",
+    "        ep_rews = []\n",
+    "        \n",
+    "        \n",
+    "        obs = env.reset()\n",
+    "        done = False\n",
+    "        \n",
+    "        while not done:\n",
+    "            batch_obs.append(obs.copy())\n",
+    "            \n",
+    "            if not rendered_first_episode:\n",
+    "                env.render()\n",
+    "            \n",
+    "            act = get_action(torch.as_tensor(obs,dtype=torch.float32), net)\n",
+    "            obs, rew, done, _ = env.step(act)\n",
+    "            \n",
+    "            batch_acts.append(act)\n",
+    "            ep_rews.append(rew)\n",
+    "        \n",
+    "\n",
+    "        rendered_first_episode = True\n",
+    "        ep_ret, ep_len = sum(ep_rews), len(ep_rews)\n",
+    "        batch_rets.append(ep_ret)\n",
+    "        batch_lens.append(ep_len)\n",
+    "        \n",
+    "        batch_weights += [ep_ret] * ep_len\n",
+    "    \n",
+    "    return batch_obs, batch_acts, batch_weights, batch_rets, batch_lens"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 5,
+   "id": "4f367b0c",
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def train_one_epoch(batch_size, optimizer, net):\n",
+    "    \n",
+    "    batch_obs, batch_acts, batch_weights, batch_rets, batch_lens = sample_trajectories(batch_size, net)\n",
+    "    \n",
+    "    \n",
+    "    optimizer.zero_grad()\n",
+    "    batch_loss = compute_loss(obs=torch.as_tensor(batch_obs, dtype=torch.float32),\n",
+    "                              act=torch.as_tensor(batch_acts, dtype=torch.int32),\n",
+    "                              weights=torch.as_tensor(batch_weights, dtype=torch.float32),\n",
+    "                              net=net\n",
+    "                            )\n",
+    "    batch_loss.backward()\n",
+    "    optimizer.step()\n",
+    "    \n",
+    "    return batch_loss, batch_rets, batch_lens    "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": 6,
+   "id": "626dee57",
+   "metadata": {},
+   "outputs": [
+    {
+     "name": "stdout",
+     "output_type": "stream",
+     "text": [
+      "epoch: 0 \t length: 20.74 \t returns 20.74\n",
+      "epoch: 10 \t length: 68.63 \t returns 68.63\n",
+      "epoch: 20 \t length: 235.56 \t returns 235.56\n",
+      "epoch: 30 \t length: 495.99 \t returns 495.99\n",
+      "epoch: 40 \t length: 500.0 \t returns 500.0\n"
+     ]
+    }
+   ],
+   "source": [
+    "p_net = PolicyNetwork()\n",
+    "batch_size = 100\n",
+    "n_epochs = 50\n",
+    "learning_rate = 0.01\n",
+    "optimizer = Adam(p_net.parameters(), lr=learning_rate)\n",
+    "\n",
+    "for epoch in range(n_epochs):\n",
+    "    loss,rets,lens = train_one_epoch(batch_size,optimizer,p_net)\n",
+    "    if epoch%10==0:\n",
+    "        print(f'epoch: {epoch} \\t length: {np.mean(lens)} \\t returns {np.mean(rets)}')\n",
+    "env.close()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "id": "4f8a1453",
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.8.8"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 5
+}
